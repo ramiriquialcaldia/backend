@@ -38,6 +38,7 @@ class CompletarPerfilRequest(BaseModel):
     NombreCompleto: str
     CorreoInstitucional: str
     NuevaContrasena: str
+    Profesion: Optional[str] = None
 
 
 # FUNCIONES DE SEGURIDAD (BCRYPT)
@@ -241,13 +242,15 @@ def completar_registro(req: CompletarPerfilRequest):
             UPDATE USUARIOS
             SET NombreCompleto = ?,
                 CorreoInstitucional = ?,
-                ContrasenaHash = ?
+                ContrasenaHash = ?,
+                Profesion = ?
             WHERE Usuario = ?
         """
         cursor.execute(query, (
             req.NombreCompleto.strip(),
             req.CorreoInstitucional.strip(),
             nueva_clave_hash,
+            req.Profesion.strip() if req.Profesion else None,
             req.Usuario.strip()
         ))
         conn.commit()
@@ -255,7 +258,8 @@ def completar_registro(req: CompletarPerfilRequest):
         return {
             "mensaje": "Perfil completado y contraseña actualizada exitosamente",
             "usuario": req.Usuario.strip(),
-            "nombre_completo": req.NombreCompleto.strip()
+            "nombre_completo": req.NombreCompleto.strip(),
+            "profesion": req.Profesion
         }
     except HTTPException:
         raise

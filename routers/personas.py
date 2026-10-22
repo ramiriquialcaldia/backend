@@ -36,8 +36,9 @@ class PersonaCreate(BaseModel):
     NumeroEmergencia: Optional[str] = None
     ObservacionGeneral: Optional[str] = None
     Estado: Optional[str] = "ACTIVO"
+    GrupoSanguineo: Optional[str] = None  # <--- NUEVA COLUMNA (ej: O+, A+, B-)
 
-# GET /personas
+# GET /personas (Listar)
 @router.get("/personas")
 def listar_personas():
     conn = get_connection()
@@ -53,7 +54,7 @@ def listar_personas():
         cursor.close()
         conn.close()
 
-# POST /personas
+# POST /personas (Crear)
 @router.post("", status_code=201)
 def crear_persona(persona: PersonaCreate):
     conn = get_connection()
@@ -68,10 +69,11 @@ def crear_persona(persona: PersonaCreate):
                 Estudio, ConQuienVive, DiagnosticoPrincipal,
                 CirugiasRealizadas, MedicamentosConsume,
                 HijosYCuantosResponden, NombreEmergencia,
-                NumeroEmergencia, ObservacionGeneral, Estado
+                NumeroEmergencia, ObservacionGeneral, Estado,
+                GrupoSanguineo
             )
             OUTPUT INSERTED.Id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         valores = (
             persona.Foto, persona.Nombres, persona.Apellidos, persona.CondicionDiscapacidad,
@@ -81,7 +83,8 @@ def crear_persona(persona: PersonaCreate):
             persona.Estudio, persona.ConQuienVive, persona.DiagnosticoPrincipal,
             persona.CirugiasRealizadas, persona.MedicamentosConsume,
             persona.HijosYCuantosResponden, persona.NombreEmergencia,
-            persona.NumeroEmergencia, persona.ObservacionGeneral, persona.Estado
+            persona.NumeroEmergencia, persona.ObservacionGeneral, persona.Estado,
+            persona.GrupoSanguineo  # <--- SE ENVÍA AQUÍ
         )
         cursor.execute(query, valores)
         nuevo_id = cursor.fetchone()[0]
