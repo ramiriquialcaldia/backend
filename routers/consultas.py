@@ -26,6 +26,28 @@ def obtener_datos_tabla(cursor, nombre_tabla: str):
     return [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
 
 
+def obtener_valoraciones_con_profesion(cursor):
+    """
+    Cruza VALORACIONES_INSTITUCIONALES con USUARIOS por el NombreProfesional (Usuario)
+    para incluir la columna Profesion sin modificar tablas.
+    """
+    query = """
+        SELECT 
+            v.Id,
+            v.PersonaId,
+            v.NombreProfesional,
+            ISNULL(u.Profesion, 'No especificada') AS Profesion,
+            v.ValoracionDetalle,
+            v.FechaValoracion
+        FROM dbo.VALORACIONES_INSTITUCIONALES v
+        LEFT JOIN dbo.USUARIOS u 
+            ON RTRIM(LTRIM(v.NombreProfesional)) = RTRIM(LTRIM(u.Usuario))
+        ORDER BY v.FechaValoracion DESC
+    """
+    cursor.execute(query)
+    columnas = [col[0] for col in cursor.description]
+    return [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
+
 
 # ENDPOINTPARA CONSULTAS DEPENDIENDO SI DEL ROL MUESTRA LA INFORMACION
 
@@ -65,20 +87,20 @@ def consultar_panel_por_sesion(req: SesionUsuarioRequest):
             respuesta["tablas"]["PERSONAS"] = obtener_datos_tabla(cursor, "PERSONAS")
             respuesta["tablas"]["AUTORIZACION_FICHAMEDICA"] = obtener_datos_tabla(cursor, "AUTORIZACION_FICHAMEDICA")
             respuesta["tablas"]["INDICADORES_IA"] = obtener_datos_tabla(cursor, "INDICADORES_IA")
-            respuesta["tablas"]["VALORACIONES_INSTITUCIONALES"] = obtener_datos_tabla(cursor, "VALORACIONES_INSTITUCIONALES")
+            respuesta["tablas"]["VALORACIONES_INSTITUCIONALES"] = obtener_valoraciones_con_profesion(cursor)
 
         elif rol_limpio == "SUPERVISOR":
             # El SUPERVISOR ve todo MENOS la tabla de TRAZABILIDAD_AUDITORIA
             respuesta["tablas"]["PERSONAS"] = obtener_datos_tabla(cursor, "PERSONAS")
             respuesta["tablas"]["AUTORIZACION_FICHAMEDICA"] = obtener_datos_tabla(cursor, "AUTORIZACION_FICHAMEDICA")
             respuesta["tablas"]["INDICADORES_IA"] = obtener_datos_tabla(cursor, "INDICADORES_IA")
-            respuesta["tablas"]["VALORACIONES_INSTITUCIONALES"] = obtener_datos_tabla(cursor, "VALORACIONES_INSTITUCIONALES")
+            respuesta["tablas"]["VALORACIONES_INSTITUCIONALES"] = obtener_valoraciones_con_profesion(cursor)
 
         elif rol_limpio == "CONTRATISTA":
             # El CONTRATISTA solo ve PERSONAS, INDICADORES_IA y VALORACIONES_INSTITUCIONALES
             respuesta["tablas"]["PERSONAS"] = obtener_datos_tabla(cursor, "PERSONAS")
             respuesta["tablas"]["INDICADORES_IA"] = obtener_datos_tabla(cursor, "INDICADORES_IA")
-            respuesta["tablas"]["VALORACIONES_INSTITUCIONALES"] = obtener_datos_tabla(cursor, "VALORACIONES_INSTITUCIONALES")
+            respuesta["tablas"]["VALORACIONES_INSTITUCIONALES"] = obtener_valoraciones_con_profesion(cursor)
 
         else:
             # Cualquier otra palabra o rol no autorizado se rechaza

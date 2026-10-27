@@ -32,6 +32,7 @@ app.include_router(indicadores.router)
 app.include_router(trazabilidad.router)
 app.include_router(valoracion.router)
 app.include_router(consultas.router)
+app.include_router(valoracion.router)
 
 # Ruta base de bienvenida o estado
 @app.get("/")

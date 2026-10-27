@@ -23,7 +23,7 @@ class ValoracionCreate(BaseModel):
 
 # ENDPOINT: CREAR VALORACIÓN (POST)
 
-@router.post("/CREAR-VALORACIÓN", status_code=201)
+@router.post("", status_code=201)
 def crear_valoracion(val: ValoracionCreate):
     conn = get_connection()
     cursor = conn.cursor()
@@ -56,20 +56,16 @@ def crear_valoracion(val: ValoracionCreate):
         query = """
             INSERT INTO VALORACIONES_INSTITUCIONALES (
                 PersonaId,
-                UsuarioId,
                 NombreProfesional,
-                NombreUsuarioPaciente,
                 ValoracionDetalle,
                 FechaValoracion
             )
             OUTPUT INSERTED.Id, INSERTED.FechaValoracion
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?)
         """
         cursor.execute(query, (
             val.PersonaId,
-            val.UsuarioId,
             nombre_prof,
-            nombre_paciente,
             val.ValoracionDetalle,
             fecha_val
         ))
