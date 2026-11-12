@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from database import get_connection
+from utils.huella_digital import generar_huella_servidor
 
 router = APIRouter(
     prefix="/trazabilidad",
@@ -20,17 +21,27 @@ class AuditoriaCreate(BaseModel):
 
 
 # ENDPOINT: REGISTRAR EVENTO DE AUDITORÍA (POST)
-
-@router.post("/REGISTRAR-TRAZABILIDAD", status_code=201)
-def registrar_auditoria(evento: AuditoriaCreate, request: Request):
+# ==========================================
+# 1. REGISTRAR EVENTO MANUAL (POST)
+# ==========================================
+@router.post("", status_code=201)
+def registrar_evento(evento: AuditoriaCreate, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # Si no se envía la IP o el Dispositivo de forma manual,
-        # FastAPI los extrae automáticamente de la cabecera del cliente
-        ip_cliente = evento.DireccionIP or (request.client.host if request.client else None)
-        dispositivo_cliente = evento.Dispositivo or request.headers.get("user-agent")
+        # 1. Obtener la IP real del cliente
+        ip_cliente = evento.DireccionIP or (request.client.host if request.client else "127.0.0.1")
 
+        # 2. Generar huella digital del servidor actual
+        info_huella = generar_huella_servidor()
+        huella = info_huella.get("huella_servidor", "LOCAL-DEV")
+        sistema = info_huella.get("sistema", "SO")
+
+        # 3. Combinar dispositivo con la firma de hardware de la máquina
+        cliente_navegador = evento.Dispositivo or request.headers.get("user-agent", "Web")
+        dispositivo_completo = f"Servidor: {huella} ({sistema}) | Cliente: {cliente_navegador}"
+
+        # 4. Inserción con truncado de seguridad según el esquema SQL Server
         query = """
             INSERT INTO TRAZABILIDAD_AUDITORIA (
                 UsuarioId,
@@ -43,26 +54,22 @@ def registrar_auditoria(evento: AuditoriaCreate, request: Request):
             OUTPUT INSERTED.Id, INSERTED.FechaHoraServer
             VALUES (?, ?, ?, ?, ?, ?)
         """
-        valores = (
+        cursor.execute(query, (
             evento.UsuarioId,
-            evento.AccionRealizada,
-            evento.TablaAfectada,
-            ip_cliente,
-            dispositivo_cliente,
-            evento.UbicacionGeo
-        )
-
-        cursor.execute(query, valores)
-        resultado = cursor.fetchone()
-        nuevo_id = resultado[0]
-        fecha_servidor = resultado[1]
-
+            evento.AccionRealizada[:50],        # varchar(50)
+            evento.TablaAfectada[:100],         # varchar(100)
+            ip_cliente[:50],                    # varchar(50)
+            dispositivo_completo[:255],         # varchar(255)
+            (evento.UbicacionGeo[:150] if evento.UbicacionGeo else None) # varchar(150)
+        ))
+        res = cursor.fetchone()
         conn.commit()
 
         return {
-            "mensaje": "Evento de trazabilidad registrado con éxito",
-            "id_auditoria": nuevo_id,
-            "fecha_servidor": str(fecha_servidor)
+            "mensaje": "Evento de auditoría registrado exitosamente",
+            "id": res[0],
+            "fecha": str(res[1]),
+            "huella_servidor": huella
         }
     except Exception as err:
         conn.rollback()
@@ -71,10 +78,13 @@ def registrar_auditoria(evento: AuditoriaCreate, request: Request):
         cursor.close()
         conn.close()
 
-# ENDPOINT: CONSULTAR AUDITORÍA (GET - Para Rol 1 Super Admin)
 
-@router.get("/CONSULTAR-TRAZABILIDAD")
+# ==========================================
+# 2. CONSULTAR REGISTROS DE TRAZABILIDAD (GET)
+# ==========================================
+@router.get("")
 def consultar_auditoria(limite: int = 100):
+    """Retorna los últimos eventos auditados cruzando con el nombre del usuario."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -82,7 +92,7 @@ def consultar_auditoria(limite: int = 100):
             SELECT TOP ({limite})
                 A.Id,
                 A.UsuarioId,
-                U.NombreCompleto AS NombreUsuario,
+                ISNULL(U.NombreCompleto, U.Usuario) AS NombreUsuario,
                 A.AccionRealizada,
                 A.TablaAfectada,
                 A.FechaHoraServer,
@@ -95,7 +105,13 @@ def consultar_auditoria(limite: int = 100):
         """
         cursor.execute(query)
         columnas = [col[0] for col in cursor.description]
-        registros = [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
+        registros = []
+        for fila in cursor.fetchall():
+            item = dict(zip(columnas, fila))
+            if item.get("FechaHoraServer"):
+                item["FechaHoraServer"] = str(item["FechaHoraServer"])
+            registros.append(item)
+
         return {"total": len(registros), "data": registros}
     except Exception as err:
         raise HTTPException(status_code=500, detail=str(err))

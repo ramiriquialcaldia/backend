@@ -8,6 +8,7 @@ DB_PASSWORD=    jhNLRKEYj_oFpPSAiDE
 Instalación de dependencias (en caso de desplegar en otro entorno):
 pip install fastapi uvicorn pyodbc pydantic
 pip install bcrypt
+pip install python-multipart azure-storage-blob
 
 Ejecutar el servidor en modo desarrollo:
 uvicorn main:app --reload

@@ -1,8 +1,9 @@
 from datetime import date, datetime
 from typing import Literal, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from database import get_connection
+from utils.auditoria import registrar_evento_auditoria
 
 router = APIRouter(
     prefix="/autorizaciones",
@@ -64,11 +65,11 @@ def listar_autorizaciones():
 
 # 3. POST /autorizaciones (Crear nueva autorización médica)
 @router.post("", status_code=201)
-def crear_autorizacion(autorizacion: AutorizacionCreate):
+def crear_autorizacion(autorizacion: AutorizacionCreate, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # Si no viene FechaHoraVerificacion desde el frontend, se toma el momento actual
+        # 1. Si no viene FechaHoraVerificacion desde el frontend, se toma el momento actual
         fecha_hora_verif = autorizacion.FechaHoraVerificacion or datetime.now()
 
         query = """
@@ -99,6 +100,24 @@ def crear_autorizacion(autorizacion: AutorizacionCreate):
         ))
         
         nuevo_id = cursor.fetchone()[0]
+
+        # 2. Obtener Id del usuario si coincide con el Supervisor que verificó
+        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (autorizacion.SupervisorVerifico.strip(),))
+        usr = cursor.fetchone()
+        usuario_id = usr[0] if usr else None
+
+        # 3. Registrar auditoría con huella digital nativa
+        ip_cliente = request.client.host if request.client else "127.0.0.1"
+        registrar_evento_auditoria(
+            cursor=cursor,
+            usuario_id=usuario_id,
+            accion=f"CREAR_AUTORIZACION_ID_{nuevo_id}",
+            tabla_afectada="AUTORIZACION_FICHAMEDICA",
+            ip_cliente=ip_cliente,
+            detalle_extra=f"PersonaId: {autorizacion.PersonaId} | Autorizó: {autorizacion.NombreUsuarioAutoriza.strip()}"
+        )
+
+        # 4. Confirmar ambas operaciones en la misma transacción
         conn.commit()
 
         return {

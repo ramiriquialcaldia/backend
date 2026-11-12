@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from database import get_connection
 import bcrypt
 from typing import Literal
+from utils.auditoria import registrar_evento_auditoria
 
 router = APIRouter(
     prefix="/usuarios",
@@ -26,6 +27,7 @@ class PreCrearContratista(BaseModel):
     Usuario: str
     Contrasena: str
     PermisosRol: Literal["CONTRATISTA", "SUPERVISOR"]
+    AdminUsuarioId: Optional[int] = None 
 
 # 3. Login para validar credenciales
 class LoginRequest(BaseModel):
@@ -54,20 +56,22 @@ def verificar_contrasena(password_plano: str, password_hash: str) -> bool:
 # ENDPOINT 1 : CREAR USUARIO DIRECTO Y COMPLETO
 
 @router.post("/crear-completo", status_code=201)
-def crear_usuario_completo(req: UsuarioCompletoCreate):
+def crear_usuario_completo(req: UsuarioCompletoCreate, request: Request):
     """Crea un usuario con todos sus campos de una sola vez."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        usuario_limpio = req.Usuario.strip()
+
         # Validar si el usuario ya existe
-        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (req.Usuario.strip(),))
+        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (usuario_limpio,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="El nombre de usuario ya está registrado.")
 
         clave_encriptada = encriptar_contrasena(req.Contrasena)
-        correo = req.CorreoInstitucional or f"{req.Usuario.strip()}@ramiriqui-boyaca.gov.co"
+        correo = req.CorreoInstitucional or f"{usuario_limpio}@ramiriqui-boyaca.gov.co"
         estado = 1 if req.EstadoActivo else 0
-        rol = req.PermisosRol.strip() if req.PermisosRol else "CONTRATISTA"
+        rol = req.PermisosRol.strip().upper() if req.PermisosRol else "CONTRATISTA"
 
         query = """
             INSERT INTO USUARIOS (
@@ -83,19 +87,31 @@ def crear_usuario_completo(req: UsuarioCompletoCreate):
         """
         cursor.execute(query, (
             req.NombreCompleto.strip(),
-            req.Usuario.strip(),
+            usuario_limpio,
             correo,
             clave_encriptada,
             rol,
             estado
         ))
         nuevo_id = cursor.fetchone()[0]
+
+        # REGISTRO DE TRAZABILIDAD
+        ip_cliente = request.client.host if request.client else "127.0.0.1"
+        registrar_evento_auditoria(
+            cursor=cursor,
+            usuario_id=nuevo_id,
+            accion=f"CREAR_USUARIO_{usuario_limpio}",
+            tabla_afectada="USUARIOS",
+            ip_cliente=ip_cliente,
+            detalle_extra=f"Rol: {rol} | Nombre: {req.NombreCompleto.strip()}"
+        )
+
         conn.commit()
 
         return {
             "mensaje": "Usuario completo creado exitosamente",
             "id_usuario": nuevo_id,
-            "usuario": req.Usuario.strip(),
+            "usuario": usuario_limpio,
             "rol": rol
         }
     except HTTPException:
@@ -108,10 +124,11 @@ def crear_usuario_completo(req: UsuarioCompletoCreate):
         conn.close()
 
 
-# ENDPOINT 2: ADMIN REGISTRA USUARIO Y CLAVE PROVISIONAL
-
+# ==========================================
+# ENDPOINT 2: ADMIN PRE-CREA USUARIO
+# ==========================================
 @router.post("/pre-crear", status_code=201)
-def pre_crear_usuario(req: PreCrearContratista):
+def pre_crear_usuario(req: PreCrearContratista, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -121,9 +138,9 @@ def pre_crear_usuario(req: PreCrearContratista):
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="El nombre de usuario ya está en uso.")
 
+        rol_destino = (req.PermisosRol or "CONTRATISTA").strip().upper()
         clave_encriptada = encriptar_contrasena(req.Contrasena)
 
-        # Correo y Nombre temporales únicos para no violar la restricción UNIQUE
         nombre_temporal = f"PENDIENTE_{usuario_limpio}"
         correo_temporal = f"pendiente_{usuario_limpio}@temporal.local"
 
@@ -139,20 +156,39 @@ def pre_crear_usuario(req: PreCrearContratista):
             OUTPUT INSERTED.Id
             VALUES (?, ?, ?, ?, ?, 1)
         """
-        # Se envían los valores temporales únicos
         cursor.execute(
             query,
-            (nombre_temporal, usuario_limpio, correo_temporal, clave_encriptada, req.PermisosRol)
+            (nombre_temporal, usuario_limpio, correo_temporal, clave_encriptada, rol_destino)
         )
         nuevo_id = cursor.fetchone()[0]
+
+        # REGISTRO DE TRAZABILIDAD:
+        # Se asocia al Admin que realiza la acción, NO al nuevo ID creado
+        admin_responsable_id = req.AdminUsuarioId
+        if not admin_responsable_id:
+            # Si no viene en el body, busca el usuario 'administrador'
+            cursor.execute("SELECT TOP 1 Id FROM USUARIOS WHERE Usuario = 'administrador'")
+            admin_row = cursor.fetchone()
+            admin_responsable_id = admin_row[0] if admin_row else None
+
+        ip_cliente = request.client.host if request.client else "127.0.0.1"
+        registrar_evento_auditoria(
+            cursor=cursor,
+            usuario_id=admin_responsable_id,  # <-- AQUÍ QUEDA EL ADMIN
+            accion=f"PRE_CREAR_USUARIO_{usuario_limpio}",
+            tabla_afectada="USUARIOS",
+            ip_cliente=ip_cliente,
+            detalle_extra=f"Nuevo usuario: {usuario_limpio} (Rol: {rol_destino})"
+        )
+
         conn.commit()
 
         return {
-            "mensaje": f"Usuario {req.PermisosRol.lower()} pre-creado con éxito",
+            "mensaje": f"Usuario {rol_destino.lower()} pre-creado con éxito",
             "id_usuario": nuevo_id,
             "usuario": usuario_limpio,
             "correo": correo_temporal,
-            "rol": req.PermisosRol,
+            "rol": rol_destino,
             "estado": "ACTIVO"
         }
     except HTTPException:
@@ -164,14 +200,14 @@ def pre_crear_usuario(req: PreCrearContratista):
         cursor.close()
         conn.close()
 
-# ENDPOINT: LOGIN (Estado y validación limpia)
-
+# ==========================================
+# ENDPOINT 3: LOGIN
+# ==========================================
 @router.post("/login")
 def login(req: LoginRequest):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # Consulta completa idéntica a la que funcionaba
         cursor.execute("""
             SELECT Id, Usuario, ContrasenaHash, NombreCompleto, CorreoInstitucional, PermisosRol, EstadoActivo
             FROM USUARIOS
@@ -183,7 +219,6 @@ def login(req: LoginRequest):
         if not usuario:
             raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
 
-        # Desempaquetado seguro de la tupla (evita el error de user.ContrasenaHash)
         id_usr, user_name, hash_guardado, nombre, correo, rol, activo = usuario
 
         # Validar estado activo
@@ -195,7 +230,7 @@ def login(req: LoginRequest):
         if not verificar_contrasena(req.Contrasena, hash_guardado):
             raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
 
-        # Evaluar si el nombre o correo inician con 'PENDIENTE'
+        # Evaluar si requiere completar datos
         nombre_str = str(nombre or "").strip().upper()
         correo_str = str(correo or "").strip().upper()
 
@@ -224,42 +259,56 @@ def login(req: LoginRequest):
         cursor.close()
         conn.close()
 
-# ENDPOINT 4: ACTUALIZAR MISMA FILA CON LOS DATOS FINALES
 
+# ==========================================
+# ENDPOINT 4: COMPLETAR REGISTRO
+# ==========================================
 @router.put("/completar-registro")
-def completar_registro(req: CompletarPerfilRequest):
+def completar_registro(req: CompletarPerfilRequest, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (req.Usuario.strip(),))
+        usuario_limpio = req.Usuario.strip()
+
+        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (usuario_limpio,))
         usuario = cursor.fetchone()
         if not usuario:
             raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
+        id_usuario = usuario[0]
         nueva_clave_hash = encriptar_contrasena(req.NuevaContrasena)
 
         query = """
             UPDATE USUARIOS
             SET NombreCompleto = ?,
                 CorreoInstitucional = ?,
-                ContrasenaHash = ?,
-                Profesion = ?
+                ContrasenaHash = ?
             WHERE Usuario = ?
         """
         cursor.execute(query, (
             req.NombreCompleto.strip(),
             req.CorreoInstitucional.strip(),
             nueva_clave_hash,
-            req.Profesion.strip() if req.Profesion else None,
-            req.Usuario.strip()
+            usuario_limpio
         ))
+
+        # REGISTRO DE TRAZABILIDAD
+        ip_cliente = request.client.host if request.client else "127.0.0.1"
+        registrar_evento_auditoria(
+            cursor=cursor,
+            usuario_id=id_usuario,
+            accion=f"COMPLETAR_PERFIL_{usuario_limpio}",
+            tabla_afectada="USUARIOS",
+            ip_cliente=ip_cliente,
+            detalle_extra=f"Nombre: {req.NombreCompleto.strip()} | Correo: {req.CorreoInstitucional.strip()}"
+        )
+
         conn.commit()
 
         return {
             "mensaje": "Perfil completado y contraseña actualizada exitosamente",
-            "usuario": req.Usuario.strip(),
-            "nombre_completo": req.NombreCompleto.strip(),
-            "profesion": req.Profesion
+            "usuario": usuario_limpio,
+            "nombre_completo": req.NombreCompleto.strip()
         }
     except HTTPException:
         raise
@@ -269,3 +318,4 @@ def completar_registro(req: CompletarPerfilRequest):
     finally:
         cursor.close()
         conn.close()
+    
