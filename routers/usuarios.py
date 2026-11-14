@@ -52,6 +52,10 @@ def encriptar_contrasena(password: str) -> str:
 def verificar_contrasena(password_plano: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password_plano.encode('utf-8'), password_hash.encode('utf-8'))
 
+class CambiarEstadoUsuarioRequest(BaseModel):
+    EstadoActivo: bool
+    UsuarioResponsableId: Optional[int] = None
+
 
 # ENDPOINT 1 : CREAR USUARIO DIRECTO Y COMPLETO
 
@@ -318,4 +322,125 @@ def completar_registro(req: CompletarPerfilRequest, request: Request):
     finally:
         cursor.close()
         conn.close()
-    
+
+
+
+
+
+
+@router.get("/gestion")
+def listar_usuarios_gestion():
+    """Lista los usuarios de la tabla USUARIOS para administrar su acceso."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT 
+                u.Id,
+                u.NombreCompleto,
+                u.Usuario,
+                u.CorreoInstitucional,
+                u.PermisosRol,
+                u.Profesion,
+                u.EstadoActivo,
+                u.FechaCreacion,
+                u.FechaEliminacion,
+                resp.Usuario AS EliminadoPorUsuario
+            FROM USUARIOS u
+            LEFT JOIN USUARIOS resp ON u.EliminadoPor = resp.Id
+            ORDER BY u.Id DESC
+        """)
+        columnas = [col[0] for col in cursor.description]
+        usuarios = []
+        for fila in cursor.fetchall():
+            item = dict(zip(columnas, fila))
+            item["EstadoActivo"] = True if item["EstadoActivo"] in [1, True] else False
+            if item.get("FechaCreacion"):
+                item["FechaCreacion"] = str(item["FechaCreacion"])[:19]
+            if item.get("FechaEliminacion"):
+                item["FechaEliminacion"] = str(item["FechaEliminacion"])[:19]
+            usuarios.append(item)
+        return {"total": len(usuarios), "data": usuarios}
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@router.patch("/{usuario_id}/estado")
+def cambiar_estado_usuario(usuario_id: int, req: CambiarEstadoUsuarioRequest, request: Request):
+    """Revoca o reactiva el acceso en USUARIOS y registra trazabilidad solo si el cambio es exitoso."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT Usuario, PermisosRol, EstadoActivo FROM USUARIOS WHERE Id = ?", (usuario_id,))
+        fila = cursor.fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+        nombre_usr, rol_usr, estado_actual = fila
+        estado_actual_bool = True if estado_actual in [1, True] else False
+
+        if str(rol_usr).upper() in ["ADMIN", "ADMINISTRADOR"] and not req.EstadoActivo:
+            raise HTTPException(status_code=403, detail="No se puede desactivar la cuenta del Administrador principal.")
+
+        # Si el estado ya es el mismo, no hacer nada ni ensuciar la trazabilidad
+        if estado_actual_bool == req.EstadoActivo:
+            return {"mensaje": "Sin cambios en el estado del usuario."}
+
+        if not req.EstadoActivo:
+            cursor.execute("""
+                UPDATE USUARIOS
+                SET EstadoActivo = 0,
+                    FechaEliminacion = GETDATE(),
+                    EliminadoPor = ?
+                WHERE Id = ?
+            """, (req.UsuarioResponsableId, usuario_id))
+            accion_log = f"QUITAR_ACCESO_USUARIO_{nombre_usr}"
+        else:
+            cursor.execute("""
+                UPDATE USUARIOS
+                SET EstadoActivo = 1,
+                    FechaEliminacion = NULL,
+                    EliminadoPor = NULL
+                WHERE Id = ?
+            """, (usuario_id,))
+            accion_log = f"REACTIVAR_ACCESO_USUARIO_{nombre_usr}"
+
+        # Registrar trazabilidad en la misma transacción (solo si el UPDATE tuvo éxito)
+        ip_cliente = request.client.host if request.client else "127.0.0.1"
+        dispositivo = (request.headers.get("user-agent") or "Web")[:250]
+
+        cursor.execute("""
+            INSERT INTO TRAZABILIDAD_AUDITORIA (
+                UsuarioId,
+                AccionRealizada,
+                TablaAfectada,
+                DireccionIP,
+                Dispositivo,
+                UbicacionGeo
+            )
+            VALUES (?, ?, 'USUARIOS', ?, ?, ?)
+        """, (
+            req.UsuarioResponsableId,
+            accion_log[:50],
+            ip_cliente,
+            dispositivo,
+            f"UsuarioId afectado: {usuario_id} ({rol_usr})"
+        ))
+
+        conn.commit()
+        return {
+            "mensaje": f"Estado de '{nombre_usr}' actualizado correctamente.",
+            "id_usuario": usuario_id,
+            "estado_activo": req.EstadoActivo
+        }
+    except HTTPException:
+        raise
+    except Exception as err:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(err))
+    finally:
+        cursor.close()
+        conn.close()

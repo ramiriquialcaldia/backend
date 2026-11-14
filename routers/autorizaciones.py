@@ -23,7 +23,32 @@ class AutorizacionCreate(BaseModel):
     # Opcional: si el frontend no la envía, SQL Server o la BD asigna la fecha y hora actual automáticamente
     FechaHoraVerificacion: Optional[datetime] = None
 
+class DocumentoUpdate(BaseModel):
+    UbicacionDocumentoFisico: str
 
+
+@router.patch("/persona/{persona_id}/documento")
+def actualizar_documento_autorizacion(persona_id: int, req: DocumentoUpdate):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "UPDATE AUTORIZACION_FICHAMEDICA SET UbicacionDocumentoFisico = ? WHERE PersonaId = ?",
+            (req.UbicacionDocumentoFisico.strip(), persona_id)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="No se encontró autorización para esta persona.")
+        conn.commit()
+        return {"mensaje": "Documento PDF actualizado correctamente en la base de datos"}
+    except HTTPException:
+        raise
+    except Exception as err:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(err))
+    finally:
+        cursor.close()
+        conn.close()
+        
 # 2. GET /autorizaciones/autorizacion (Listar autorizaciones)
 @router.get("/autorizacion")
 def listar_autorizaciones():

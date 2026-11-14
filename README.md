@@ -9,6 +9,8 @@ Instalación de dependencias (en caso de desplegar en otro entorno):
 pip install fastapi uvicorn pyodbc pydantic
 pip install bcrypt
 pip install python-multipart azure-storage-blob
+pip install python-docx
+pip install google-genai pypdf
 
 Ejecutar el servidor en modo desarrollo:
 uvicorn main:app --reload
