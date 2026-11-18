@@ -4,7 +4,8 @@ from typing import Optional
 from database import get_connection
 import bcrypt
 from typing import Literal
-from utils.auditoria import registrar_evento_auditoria
+# from utils.auditoria import registrar_evento_auditoria
+from utils.contexto_auditoria import establecer_contexto_auditoria
 
 router = APIRouter(
     prefix="/usuarios",
@@ -58,7 +59,6 @@ class CambiarEstadoUsuarioRequest(BaseModel):
 
 
 # ENDPOINT 1 : CREAR USUARIO DIRECTO Y COMPLETO
-
 @router.post("/crear-completo", status_code=201)
 def crear_usuario_completo(req: UsuarioCompletoCreate, request: Request):
     """Crea un usuario con todos sus campos de una sola vez."""
@@ -67,7 +67,6 @@ def crear_usuario_completo(req: UsuarioCompletoCreate, request: Request):
     try:
         usuario_limpio = req.Usuario.strip()
 
-        # Validar si el usuario ya existe
         cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (usuario_limpio,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="El nombre de usuario ya está registrado.")
@@ -86,7 +85,6 @@ def crear_usuario_completo(req: UsuarioCompletoCreate, request: Request):
                 PermisosRol,
                 EstadoActivo
             )
-            OUTPUT INSERTED.Id
             VALUES (?, ?, ?, ?, ?, ?)
         """
         cursor.execute(query, (
@@ -97,18 +95,11 @@ def crear_usuario_completo(req: UsuarioCompletoCreate, request: Request):
             rol,
             estado
         ))
-        nuevo_id = cursor.fetchone()[0]
-
-        # REGISTRO DE TRAZABILIDAD
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=nuevo_id,
-            accion=f"CREAR_USUARIO_{usuario_limpio}",
-            tabla_afectada="USUARIOS",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"Rol: {rol} | Nombre: {req.NombreCompleto.strip()}"
-        )
+        
+        # Recuperar el ID de forma segura compatible con triggers activos
+        cursor.execute("SELECT @@IDENTITY")
+        fila_id = cursor.fetchone()
+        nuevo_id = int(fila_id[0]) if fila_id and fila_id[0] is not None else 0
 
         conn.commit()
 
@@ -148,6 +139,14 @@ def pre_crear_usuario(req: PreCrearContratista, request: Request):
         nombre_temporal = f"PENDIENTE_{usuario_limpio}"
         correo_temporal = f"pendiente_{usuario_limpio}@temporal.local"
 
+        admin_responsable_id = req.AdminUsuarioId
+        if not admin_responsable_id:
+            cursor.execute("SELECT TOP 1 Id FROM USUARIOS WHERE Usuario = 'administrador'")
+            admin_row = cursor.fetchone()
+            admin_responsable_id = admin_row[0] if admin_row else None
+
+        establecer_contexto_auditoria(cursor, request, usuario_id=admin_responsable_id)
+
         query = """
             INSERT INTO USUARIOS (
                 NombreCompleto,
@@ -157,33 +156,17 @@ def pre_crear_usuario(req: PreCrearContratista, request: Request):
                 PermisosRol,
                 EstadoActivo
             )
-            OUTPUT INSERTED.Id
             VALUES (?, ?, ?, ?, ?, 1)
         """
         cursor.execute(
             query,
             (nombre_temporal, usuario_limpio, correo_temporal, clave_encriptada, rol_destino)
         )
-        nuevo_id = cursor.fetchone()[0]
-
-        # REGISTRO DE TRAZABILIDAD:
-        # Se asocia al Admin que realiza la acción, NO al nuevo ID creado
-        admin_responsable_id = req.AdminUsuarioId
-        if not admin_responsable_id:
-            # Si no viene en el body, busca el usuario 'administrador'
-            cursor.execute("SELECT TOP 1 Id FROM USUARIOS WHERE Usuario = 'administrador'")
-            admin_row = cursor.fetchone()
-            admin_responsable_id = admin_row[0] if admin_row else None
-
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=admin_responsable_id,  # <-- AQUÍ QUEDA EL ADMIN
-            accion=f"PRE_CREAR_USUARIO_{usuario_limpio}",
-            tabla_afectada="USUARIOS",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"Nuevo usuario: {usuario_limpio} (Rol: {rol_destino})"
-        )
+        
+        # Recuperar el ID de forma segura compatible con triggers activos
+        cursor.execute("SELECT @@IDENTITY")
+        fila_id = cursor.fetchone()
+        nuevo_id = int(fila_id[0]) if fila_id and fila_id[0] is not None else 0
 
         conn.commit()
 
@@ -203,6 +186,21 @@ def pre_crear_usuario(req: PreCrearContratista, request: Request):
     finally:
         cursor.close()
         conn.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # ==========================================
 # ENDPOINT 3: LOGIN
@@ -282,6 +280,9 @@ def completar_registro(req: CompletarPerfilRequest, request: Request):
         id_usuario = usuario[0]
         nueva_clave_hash = encriptar_contrasena(req.NuevaContrasena)
 
+        # Pasar contexto (UsuarioId, IP y Huella) a SQL Server antes del UPDATE
+        establecer_contexto_auditoria(cursor, request, usuario_id=id_usuario)
+
         query = """
             UPDATE USUARIOS
             SET NombreCompleto = ?,
@@ -295,17 +296,6 @@ def completar_registro(req: CompletarPerfilRequest, request: Request):
             nueva_clave_hash,
             usuario_limpio
         ))
-
-        # REGISTRO DE TRAZABILIDAD
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=id_usuario,
-            accion=f"COMPLETAR_PERFIL_{usuario_limpio}",
-            tabla_afectada="USUARIOS",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"Nombre: {req.NombreCompleto.strip()} | Correo: {req.CorreoInstitucional.strip()}"
-        )
 
         conn.commit()
 
@@ -322,8 +312,6 @@ def completar_registro(req: CompletarPerfilRequest, request: Request):
     finally:
         cursor.close()
         conn.close()
-
-
 
 
 
@@ -369,8 +357,9 @@ def listar_usuarios_gestion():
 
 
 @router.patch("/{usuario_id}/estado")
+@router.patch("/{usuario_id}/estado")
 def cambiar_estado_usuario(usuario_id: int, req: CambiarEstadoUsuarioRequest, request: Request):
-    """Revoca o reactiva el acceso en USUARIOS y registra trazabilidad solo si el cambio es exitoso."""
+    """Revoca o reactiva el acceso en USUARIOS y el Trigger audita si el cambio es exitoso."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -389,6 +378,9 @@ def cambiar_estado_usuario(usuario_id: int, req: CambiarEstadoUsuarioRequest, re
         if estado_actual_bool == req.EstadoActivo:
             return {"mensaje": "Sin cambios en el estado del usuario."}
 
+        # Pasar contexto (Usuario responsable, IP y Huella) a SQL Server antes del UPDATE
+        establecer_contexto_auditoria(cursor, request, usuario_id=req.UsuarioResponsableId)
+
         if not req.EstadoActivo:
             cursor.execute("""
                 UPDATE USUARIOS
@@ -397,7 +389,6 @@ def cambiar_estado_usuario(usuario_id: int, req: CambiarEstadoUsuarioRequest, re
                     EliminadoPor = ?
                 WHERE Id = ?
             """, (req.UsuarioResponsableId, usuario_id))
-            accion_log = f"QUITAR_ACCESO_USUARIO_{nombre_usr}"
         else:
             cursor.execute("""
                 UPDATE USUARIOS
@@ -406,29 +397,6 @@ def cambiar_estado_usuario(usuario_id: int, req: CambiarEstadoUsuarioRequest, re
                     EliminadoPor = NULL
                 WHERE Id = ?
             """, (usuario_id,))
-            accion_log = f"REACTIVAR_ACCESO_USUARIO_{nombre_usr}"
-
-        # Registrar trazabilidad en la misma transacción (solo si el UPDATE tuvo éxito)
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        dispositivo = (request.headers.get("user-agent") or "Web")[:250]
-
-        cursor.execute("""
-            INSERT INTO TRAZABILIDAD_AUDITORIA (
-                UsuarioId,
-                AccionRealizada,
-                TablaAfectada,
-                DireccionIP,
-                Dispositivo,
-                UbicacionGeo
-            )
-            VALUES (?, ?, 'USUARIOS', ?, ?, ?)
-        """, (
-            req.UsuarioResponsableId,
-            accion_log[:50],
-            ip_cliente,
-            dispositivo,
-            f"UsuarioId afectado: {usuario_id} ({rol_usr})"
-        ))
 
         conn.commit()
         return {

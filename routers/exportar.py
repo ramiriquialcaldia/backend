@@ -57,7 +57,7 @@ def agregar_encabezado_institucional(doc: Document, titulo_documento: str):
     run_entidad.font.size = Pt(13)
     run_entidad.font.color.rgb = RGBColor(15, 41, 66)
 
-    run_sub = p_entidad.add_run("Secretaría de Desarrollo Social • Programa de Atención al Adulto Mayor\n")
+    run_sub = p_entidad.add_run("Secretaría de la Familia • Programa Centro vida \n")
     run_sub.font.size = Pt(9.5)
     run_sub.font.color.rgb = RGBColor(100, 116, 139)
 
@@ -278,34 +278,34 @@ def descargar_hoja_vida_word(persona_id: int):
             p_sin_aut.runs[0].italic = True
 
         # Sección 3: Historial de Valoraciones Institucionales
-        agregar_titulo_seccion(doc, f"3. Historial de Valoraciones Institucionales ({len(valoraciones)})")
-        if valoraciones:
-            t_val = doc.add_table(rows=len(valoraciones) + 1, cols=3)
-            t_val.alignment = WD_TABLE_ALIGNMENT.CENTER
-            aplicar_bordes_tabla(t_val)
+        # agregar_titulo_seccion(doc, f"3. Historial de Valoraciones Institucionales ({len(valoraciones)})")
+        # if valoraciones:
+        #     t_val = doc.add_table(rows=len(valoraciones) + 1, cols=3)
+        #     t_val.alignment = WD_TABLE_ALIGNMENT.CENTER
+        #     aplicar_bordes_tabla(t_val)
 
-            encabezados = ["Fecha", "Profesional Evaluador", "Detalle de la Valoración"]
-            anchos_v = [Inches(1.3), Inches(1.8), Inches(4.0)]
-            for idx, tit in enumerate(encabezados):
-                celda = t_val.rows[0].cells[idx]
-                celda.width = anchos_v[idx]
-                aplicar_fondo_celda(celda, NAVY_HEX)
-                r = celda.paragraphs[0].add_run(tit)
-                r.bold = True
-                r.font.size = Pt(9)
-                r.font.color.rgb = RGBColor(255, 255, 255)
+        #     encabezados = ["Fecha", "Profesional Evaluador", "Detalle de la Valoración"]
+        #     anchos_v = [Inches(1.3), Inches(1.8), Inches(4.0)]
+        #     for idx, tit in enumerate(encabezados):
+        #         celda = t_val.rows[0].cells[idx]
+        #         celda.width = anchos_v[idx]
+        #         aplicar_fondo_celda(celda, NAVY_HEX)
+        #         r = celda.paragraphs[0].add_run(tit)
+        #         r.bold = True
+        #         r.font.size = Pt(9)
+        #         r.font.color.rgb = RGBColor(255, 255, 255)
 
-            for idx_v, (prof, detalle, fecha_v) in enumerate(valoraciones, start=1):
-                fila = t_val.rows[idx_v]
-                fila.cells[0].width = anchos_v[0]
-                fila.cells[1].width = anchos_v[1]
-                fila.cells[2].width = anchos_v[2]
-                fila.cells[0].paragraphs[0].add_run(str(fecha_v)[:16]).font.size = Pt(8.5)
-                fila.cells[1].paragraphs[0].add_run(prof or "No registra").font.size = Pt(8.5)
-                fila.cells[2].paragraphs[0].add_run(detalle or "").font.size = Pt(8.5)
-        else:
-            p_sin_val = doc.add_paragraph("Sin valoraciones institucionales registradas.")
-            p_sin_val.runs[0].italic = True
+        #     for idx_v, (prof, detalle, fecha_v) in enumerate(valoraciones, start=1):
+        #         fila = t_val.rows[idx_v]
+        #         fila.cells[0].width = anchos_v[0]
+        #         fila.cells[1].width = anchos_v[1]
+        #         fila.cells[2].width = anchos_v[2]
+        #         fila.cells[0].paragraphs[0].add_run(str(fecha_v)[:16]).font.size = Pt(8.5)
+        #         fila.cells[1].paragraphs[0].add_run(prof or "No registra").font.size = Pt(8.5)
+        #         fila.cells[2].paragraphs[0].add_run(detalle or "").font.size = Pt(8.5)
+        # else:
+        #     p_sin_val = doc.add_paragraph("Sin valoraciones institucionales registradas.")
+        #     p_sin_val.runs[0].italic = True
 
         buffer = io.BytesIO()
         doc.save(buffer)

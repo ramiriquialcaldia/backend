@@ -3,14 +3,13 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from database import get_connection
-from utils.auditoria import registrar_evento_auditoria
+from utils.contexto_auditoria import establecer_contexto_auditoria
 
 router = APIRouter(
     prefix="/valoracion",
     tags=["Valoraciones Institucionales"]
 )
 
-# MODELO PYDANTIC
 
 class ValoracionCreate(BaseModel):
     PersonaId: int
@@ -18,17 +17,15 @@ class ValoracionCreate(BaseModel):
     NombreProfesional: Optional[str] = None
     NombreUsuarioPaciente: Optional[str] = None
     ValoracionDetalle: str
-    FechaValoracion: Optional[str] = None  # Formato: YYYY-MM-DD HH:MM:SS (si no se envía, toma la hora actual)
+    FechaValoracion: Optional[str] = None
 
 
-# ENDPOINT: CREAR VALORACIÓN (POST)
 
 @router.post("", status_code=201)
 def crear_valoracion(val: ValoracionCreate, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # 1. Validar que la persona exista en la tabla PERSONAS
         cursor.execute("SELECT Id, Nombres, Apellidos FROM PERSONAS WHERE Id = ?", (val.PersonaId,))
         persona = cursor.fetchone()
         if not persona:
@@ -40,7 +37,13 @@ def crear_valoracion(val: ValoracionCreate, request: Request):
         fecha_val = val.FechaValoracion or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         nombre_prof = (val.NombreProfesional or "No especificado").strip()
 
-        # 2. Insertar únicamente en las 4 columnas activas de la BD
+        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (nombre_prof,))
+        usr = cursor.fetchone()
+        usuario_id = usr[0] if usr else val.UsuarioId
+
+        establecer_contexto_auditoria(cursor, request, usuario_id=usuario_id)
+
+        # Inserción estándar compatible con triggers de auditoría
         query = """
             INSERT INTO VALORACIONES_INSTITUCIONALES (
                 PersonaId,
@@ -48,7 +51,6 @@ def crear_valoracion(val: ValoracionCreate, request: Request):
                 ValoracionDetalle,
                 FechaValoracion
             )
-            OUTPUT INSERTED.Id, INSERTED.FechaValoracion
             VALUES (?, ?, ?, ?)
         """
         cursor.execute(query, (
@@ -57,27 +59,14 @@ def crear_valoracion(val: ValoracionCreate, request: Request):
             val.ValoracionDetalle.strip(),
             fecha_val
         ))
-        fila = cursor.fetchone()
-        nuevo_id = fila[0]
-        fecha_creacion = fila[1]
+        
+        # Obtener el ID generado usando @@IDENTITY de forma segura
+        cursor.execute("SELECT @@IDENTITY")
+        fila_id = cursor.fetchone()
+        nuevo_id = int(fila_id[0]) if fila_id and fila_id[0] is not None else 0
 
-        # 3. Obtener el ID del usuario en sesión si existe
-        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (nombre_prof,))
-        usr = cursor.fetchone()
-        usuario_id = usr[0] if usr else None
+        fecha_creacion = fecha_val
 
-        # 4. Registrar trazabilidad con huella digital de hardware
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=usuario_id,
-            accion=f"CREAR_VALORACION_ID_{nuevo_id}",
-            tabla_afectada="VALORACIONES_INSTITUCIONALES",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"PersonaId: {val.PersonaId} | Paciente: {persona[1]} {persona[2]}"
-        )
-
-        # 5. Confirmar ambas inserciones de forma atómica
         conn.commit()
 
         return {
@@ -95,8 +84,6 @@ def crear_valoracion(val: ValoracionCreate, request: Request):
     finally:
         cursor.close()
         conn.close()
-
-# ENDPOINT: LISTAR TODAS LAS VALORACIONES (GET)
 
 @router.get("/LISTAR-VALORACIONES")
 def listar_valoraciones():
@@ -126,8 +113,6 @@ def listar_valoraciones():
         conn.close()
 
 
-# ENDPOINT: CONSULTAR VALORACIONES POR PERSONA
-
 @router.get("/persona/{persona_id}")
 def valoraciones_por_persona(persona_id: int):
     conn = get_connection()
@@ -155,3 +140,4 @@ def valoraciones_por_persona(persona_id: int):
     finally:
         cursor.close()
         conn.close()
+        

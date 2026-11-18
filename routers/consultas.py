@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from database import get_connection
-from utils.auditoria import registrar_evento_auditoria
+# from utils.auditoria import registrar_evento_auditoria
 
 router = APIRouter(
     prefix="/consultas",
@@ -103,14 +103,14 @@ def consultar_panel_por_sesion(req: SesionUsuarioRequest, request: Request):
         conn = get_connection()
         cursor = conn.cursor()
         try:
-            registrar_evento_auditoria(
-                cursor=cursor,
-                usuario_id=req.id_usuario,
-                accion="ACCESO_DENEGADO_USUARIO_INACTIVO",
-                tabla_afectada="USUARIOS",
-                ip_cliente=ip_cliente,
-                detalle_extra=f"Usuario: {req.usuario} intentó consultar panel estando inactivo"
-            )
+            # registrar_evento_auditoria(
+            #     cursor=cursor,
+            #     usuario_id=req.id_usuario,
+            #     accion="ACCESO_DENEGADO_USUARIO_INACTIVO",
+            #     tabla_afectada="USUARIOS",
+            #     ip_cliente=ip_cliente,
+            #     detalle_extra=f"Usuario: {req.usuario} intentó consultar panel estando inactivo"
+            # )
             conn.commit()
         finally:
             cursor.close()
@@ -165,14 +165,14 @@ def consultar_panel_por_sesion(req: SesionUsuarioRequest, request: Request):
 
         else:
             # Rol no reconocido: auditar intento no autorizado
-            registrar_evento_auditoria(
-                cursor=cursor,
-                usuario_id=req.id_usuario,
-                accion="ACCESO_DENEGADO_ROL_NO_PERMITIDO",
-                tabla_afectada="USUARIOS",
-                ip_cliente=ip_cliente,
-                detalle_extra=f"Intento de acceso con rol desconocido: {req.rol}"
-            )
+            # registrar_evento_auditoria(
+            #     cursor=cursor,
+            #     usuario_id=req.id_usuario,
+            #     accion="ACCESO_DENEGADO_ROL_NO_PERMITIDO",
+            #     tabla_afectada="USUARIOS",
+            #     ip_cliente=ip_cliente,
+            #     detalle_extra=f"Intento de acceso con rol desconocido: {req.rol}"
+            # )
             conn.commit()
 
             raise HTTPException(

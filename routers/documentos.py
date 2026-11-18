@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from database import get_connection
-from utils.auditoria import registrar_evento_auditoria
+from utils.contexto_auditoria import establecer_contexto_auditoria
 
 router = APIRouter(
     prefix="/documentos",
@@ -19,7 +19,6 @@ class DocumentoPersonaCreate(BaseModel):
     SubidoPor: Optional[str] = None
 
 
-# 1. GET /documentos/persona/{persona_id} -> Listar todos los PDFs de un adulto mayor
 @router.get("/persona/{persona_id}")
 def listar_documentos_persona(persona_id: int):
     conn = get_connection()
@@ -48,13 +47,11 @@ def listar_documentos_persona(persona_id: int):
         conn.close()
 
 
-# 2. POST /documentos -> Guardar nuevo PDF en BD y registrar trazabilidad
 @router.post("", status_code=201)
 def registrar_documento_persona(doc: DocumentoPersonaCreate, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # Verificar que la persona exista
         cursor.execute("SELECT Id, Nombres, Apellidos FROM PERSONAS WHERE Id = ?", (doc.PersonaId,))
         persona = cursor.fetchone()
         if not persona:
@@ -62,7 +59,15 @@ def registrar_documento_persona(doc: DocumentoPersonaCreate, request: Request):
 
         nombre_paciente_real = f"{persona[1]} {persona[2]}".strip()
 
-        # Insertar el documento en DOCUMENTOS_PERSONAS
+        usuario_id = None
+        if doc.SubidoPor:
+            cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (doc.SubidoPor.strip(),))
+            usr = cursor.fetchone()
+            if usr:
+                usuario_id = usr[0]
+
+        establecer_contexto_auditoria(cursor, request, usuario_id=usuario_id)
+
         query = """
             INSERT INTO DOCUMENTOS_PERSONAS (
                 PersonaId, NombrePaciente, NombreArchivo, 
@@ -83,25 +88,6 @@ def registrar_documento_persona(doc: DocumentoPersonaCreate, request: Request):
         nuevo_doc_id = fila_doc[0]
         fecha_subida = fila_doc[1]
 
-        # Buscar el ID numérico del usuario que subió el archivo para la auditoría
-        usuario_id = None
-        if doc.SubidoPor:
-            cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (doc.SubidoPor.strip(),))
-            usr = cursor.fetchone()
-            if usr:
-                usuario_id = usr[0]
-
-        # Registrar evento de trazabilidad con huella del servidor e IP
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=usuario_id,
-            accion=f"SUBIR_PDF_PERSONA_ID_{doc.PersonaId}",
-            tabla_afectada="DOCUMENTOS_PERSONAS",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"DocId: {nuevo_doc_id} | Archivo: {doc.NombreArchivo} | Paciente: {nombre_paciente_real}"
-        )
-
         conn.commit()
 
         return {
@@ -117,7 +103,3 @@ def registrar_documento_persona(doc: DocumentoPersonaCreate, request: Request):
     finally:
         cursor.close()
         conn.close()
-
-
-
-        

@@ -2,17 +2,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from database import get_connection
-from utils.huella_digital import generar_huella_servidor
-from utils.auditoria import registrar_evento_auditoria
+from utils.contexto_auditoria import establecer_contexto_auditoria
 
 router = APIRouter(
     prefix="/personas",
     tags=["Personas"]
 )
 
-# ==========================================
-# MODELOS PYDANTIC
-# ==========================================
 
 class PersonaCreate(BaseModel):
     Foto: Optional[str] = None
@@ -24,7 +20,7 @@ class PersonaCreate(BaseModel):
     VictimaConflicto: Optional[str] = None
     TipoDocumento: Optional[str] = None
     NumeroDocumento: str
-    FechaNacimiento: Optional[str] = None  # Formato YYYY-MM-DD
+    FechaNacimiento: Optional[str] = None
     Sexo: Optional[str] = None
     Peso: Optional[float] = None
     Altura: Optional[float] = None
@@ -44,17 +40,11 @@ class PersonaCreate(BaseModel):
     GrupoSanguineo: Optional[str] = None
 
 
-# Modelo para actualizar únicamente el Estado con control de Rol
 class EstadoPersonaUpdate(BaseModel):
     Estado: str
     RolUsuario: Optional[str] = "CONTRATISTA"
 
 
-# ==========================================
-# ENDPOINTS 
-# ==========================================
-
-# GET /personas (Listar)
 @router.get("")
 def listar_personas():
     conn = get_connection()
@@ -70,12 +60,15 @@ def listar_personas():
         cursor.close()
         conn.close()
 
-# POST /personas (Crear)
+
+
 @router.post("", status_code=201)
-def crear_persona(persona: PersonaCreate):
+def crear_persona(persona: PersonaCreate, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        establecer_contexto_auditoria(cursor, request)
+
         query = """
             INSERT INTO PERSONAS (
                 Foto, Nombres, Apellidos, CondicionDiscapacidad,
@@ -88,7 +81,6 @@ def crear_persona(persona: PersonaCreate):
                 NumeroEmergencia, ObservacionGeneral, Estado,
                 GrupoSanguineo
             )
-            OUTPUT INSERTED.Id
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         valores = (
@@ -103,7 +95,12 @@ def crear_persona(persona: PersonaCreate):
             persona.GrupoSanguineo
         )
         cursor.execute(query, valores)
-        nuevo_id = cursor.fetchone()[0]
+        
+        # Recuperar el ID de forma segura compatible con triggers activos
+        cursor.execute("SELECT @@IDENTITY")
+        fila_id = cursor.fetchone()
+        nuevo_id = int(fila_id[0]) if fila_id and fila_id[0] is not None else 0
+
         conn.commit()
         return {"mensaje": "Persona creada exitosamente", "id_persona": nuevo_id}
     except Exception as err:
@@ -113,13 +110,8 @@ def crear_persona(persona: PersonaCreate):
         cursor.close()
         conn.close()
 
-
-# ==========================================
-# NUEVO ENDPOINT: CAMBIAR ESTADO (PATCH)
-# ==========================================
 @router.patch("/{persona_id}/estado")
 def cambiar_estado_persona(persona_id: int, req: EstadoPersonaUpdate, request: Request):
-    # 1. Validar permisos: Solo ADMIN y SUPERVISOR pueden cambiar el estado
     rol = (req.RolUsuario or "").strip().upper()
     if rol not in ["ADMIN", "ADMINISTRADOR", "SUPERVISOR"]:
         raise HTTPException(
@@ -132,7 +124,6 @@ def cambiar_estado_persona(persona_id: int, req: EstadoPersonaUpdate, request: R
     try:
         nuevo_estado = req.Estado.strip().upper()
 
-        # 2. Validar que la persona exista en la base de datos
         cursor.execute("SELECT Id, Nombres, Apellidos FROM PERSONAS WHERE Id = ?", (persona_id,))
         persona = cursor.fetchone()
         if not persona:
@@ -141,27 +132,15 @@ def cambiar_estado_persona(persona_id: int, req: EstadoPersonaUpdate, request: R
                 detail=f"No se encontró ninguna persona con el Id = {persona_id}"
             )
 
-        # 3. Actualizar únicamente la columna Estado
-        query = "UPDATE PERSONAS SET Estado = ? WHERE Id = ?"
-        cursor.execute(query, (nuevo_estado, persona_id))
-
-        # 4. Obtener el ID del usuario responsable de la acción
-        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (req.RolUsuario.strip(),))
+        cursor.execute("SELECT TOP 1 Id FROM USUARIOS WHERE Usuario = ? OR PermisosRol = ?", (req.RolUsuario.strip(), rol))
         usr = cursor.fetchone()
         usuario_id = usr[0] if usr else None
 
-        # 5. Registrar en auditoría estampando la huella digital del servidor
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=usuario_id,
-            accion=f"CAMBIO_ESTADO_{nuevo_estado}_ID_{persona_id}",
-            tabla_afectada="PERSONAS",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"Persona: {persona[1]} {persona[2]}"
-        )
+        establecer_contexto_auditoria(cursor, request, usuario_id=usuario_id)
 
-        # 6. Guardar ambas operaciones juntas de forma atómica
+        query = "UPDATE PERSONAS SET Estado = ? WHERE Id = ?"
+        cursor.execute(query, (nuevo_estado, persona_id))
+
         conn.commit()
 
         return {

@@ -3,14 +3,14 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from database import get_connection
-from utils.auditoria import registrar_evento_auditoria
+from utils.contexto_auditoria import establecer_contexto_auditoria
 
 router = APIRouter(
     prefix="/autorizaciones",
     tags=["Autorizaciones"]
 )
 
-# 1. Modelo Pydantic para validar los datos que ingresa el usuario
+
 class AutorizacionCreate(BaseModel):
     PersonaId: int
     NombreUsuarioAutoriza: str = Field(..., max_length=200, description="Nombres y apellidos de quien autoriza")
@@ -48,8 +48,8 @@ def actualizar_documento_autorizacion(persona_id: int, req: DocumentoUpdate):
     finally:
         cursor.close()
         conn.close()
-        
-# 2. GET /autorizaciones/autorizacion (Listar autorizaciones)
+
+
 @router.get("/autorizacion")
 def listar_autorizaciones():
     conn = get_connection()
@@ -73,7 +73,6 @@ def listar_autorizaciones():
         registros = []
         for fila in cursor.fetchall():
             item = dict(zip(columnas, fila))
-            # Convertir fechas a string para evitar errores de serialización JSON
             if item.get("FechaAutorizacion"):
                 item["FechaAutorizacion"] = str(item["FechaAutorizacion"])
             if item.get("FechaHoraVerificacion"):
@@ -88,14 +87,18 @@ def listar_autorizaciones():
         conn.close()
 
 
-# 3. POST /autorizaciones (Crear nueva autorización médica)
 @router.post("", status_code=201)
 def crear_autorizacion(autorizacion: AutorizacionCreate, request: Request):
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # 1. Si no viene FechaHoraVerificacion desde el frontend, se toma el momento actual
         fecha_hora_verif = autorizacion.FechaHoraVerificacion or datetime.now()
+
+        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (autorizacion.SupervisorVerifico.strip(),))
+        usr = cursor.fetchone()
+        usuario_id = usr[0] if usr else None
+
+        establecer_contexto_auditoria(cursor, request, usuario_id=usuario_id)
 
         query = """
             INSERT INTO AUTORIZACION_FICHAMEDICA (
@@ -109,7 +112,6 @@ def crear_autorizacion(autorizacion: AutorizacionCreate, request: Request):
                 SupervisorVerifico,
                 FechaHoraVerificacion
             )
-            OUTPUT INSERTED.Id
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         cursor.execute(query, (
@@ -124,25 +126,11 @@ def crear_autorizacion(autorizacion: AutorizacionCreate, request: Request):
             fecha_hora_verif
         ))
         
-        nuevo_id = cursor.fetchone()[0]
+        # Recuperar el ID de forma segura compatible con triggers activos
+        cursor.execute("SELECT @@IDENTITY")
+        fila_id = cursor.fetchone()
+        nuevo_id = int(fila_id[0]) if fila_id and fila_id[0] is not None else 0
 
-        # 2. Obtener Id del usuario si coincide con el Supervisor que verificó
-        cursor.execute("SELECT Id FROM USUARIOS WHERE Usuario = ?", (autorizacion.SupervisorVerifico.strip(),))
-        usr = cursor.fetchone()
-        usuario_id = usr[0] if usr else None
-
-        # 3. Registrar auditoría con huella digital nativa
-        ip_cliente = request.client.host if request.client else "127.0.0.1"
-        registrar_evento_auditoria(
-            cursor=cursor,
-            usuario_id=usuario_id,
-            accion=f"CREAR_AUTORIZACION_ID_{nuevo_id}",
-            tabla_afectada="AUTORIZACION_FICHAMEDICA",
-            ip_cliente=ip_cliente,
-            detalle_extra=f"PersonaId: {autorizacion.PersonaId} | Autorizó: {autorizacion.NombreUsuarioAutoriza.strip()}"
-        )
-
-        # 4. Confirmar ambas operaciones en la misma transacción
         conn.commit()
 
         return {
