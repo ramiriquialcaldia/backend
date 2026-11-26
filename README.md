@@ -3,7 +3,7 @@ DB_SERVER=localhost
 DB_PORT=1433
 DB_NAME=AlcaldiaRamiriquiDB
 DB_USER=backend_user
-DB_PASSWORD=    jhNLRKEYj_oFpPSAiDE
+DB_PASSWORD=   
 
 Instalación de dependencias (en caso de desplegar en otro entorno):
 pip install fastapi uvicorn pyodbc pydantic
